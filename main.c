@@ -4,7 +4,13 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <sys/types.h>
+#include <sys/shm.h>
+#include <sys/ipc.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
+
+#define PRIMES 10000
 
 int primeNumbersTillN(int n, int arr[]){
     bool prime[n+1];
@@ -28,17 +34,19 @@ bool validateX(int x, int a, int b){
         return true;
     return false;
 }
-int flag=0;
+
+int shmid1; int* flag;
+
 int child_pid[100]={0};
 void handler(int sig){
-    //printf("IN SIGNAL HANDLER\nValue of flag: %d\n",flag);
-    if(flag == -1){
+    //printf("IN SIGNAL HANDLER\nValue of flag: %d\n",flag[0]);
+    if(flag[0] == -1){
         perror("SIGCHILD detected early! Worker children terminated!!!\n\n");
         for(int ps=0;ps<10;ps++){
             if(child_pid>0)
                 kill(child_pid[ps],SIGTERM);
         }
-        exit(1);
+        //exit(1);
     }
 }
 
@@ -67,21 +75,27 @@ void* runner(void* args){
         }
     }
     int start_indx=0,end_indx=0,k,pc;
+    bool flg = false;
     if(indx>=pi->p)
         start_indx=indx-pi->p;
     for(k = start_indx,pc=0;pi->pri[k]<=x;k++,pc++){
+        if(pi->pri[k]==x){
+            printf("For thread: %d, prime found: %d\n",pi->j,pi->pri[k]);
+            flg=true;    
+        }
+        else
+            printf("For thread: %d, prime before x found: %d\n",pi->j,pi->pri[k]);
         px[pc]=pi->pri[k];
     }
     int prime_indx=pc;
     while(p--){
         if(k<pi->sizeofpri){
+            printf("For thread: %d, prime after x found: %d\n",pi->j,pi->pri[k]);
             px[pc++] = pi->pri[k++];
         }
     }
     //6. At each level of discovery of a prime number
-    printf("For thread: %d\nPrimes before x: %d\nPrimes after x: %d\n",pi->j,indx-start_indx+1,pc-prime_indx);
-    /// left to fix according to specifics
-
+    printf("For thread: %d\nPrimes before x: %d\nPrime at x: %d\nPrimes after x: %d\n",pi->j,indx-start_indx,flg,pc-prime_indx);
 
     pi->size_px=pc;
     //7. After all, px is calculated.
@@ -126,8 +140,8 @@ int main(int argc,char** argv){
     }
 
     //declare n file descripters for n pipes and prime array
-    int primes[b];
-    int sizeOfPrimes = primeNumbersTillN(b,primes);
+    int primes[PRIMES];
+    int sizeOfPrimes = primeNumbersTillN(PRIMES,primes);
     // add pipe error checks later
     int ptoc_fd[n][2];
     int ctop_fd[n][2];
@@ -139,12 +153,22 @@ int main(int argc,char** argv){
     }
     for(int i = 0; i<n; i++){
         if(pipe(ctop_fd[i]) == -1){
-            perror("Pipe from Parent to Child failed!!!\n");
+            perror("Pipe from Child to Parent failed!!!\n");
             return (EXIT_FAILURE);
         }
     }
     //2. After creating the pipe and worker processes
     printf("Pipes created succesfully!!!\n\n");
+    
+    if((shmid1 = shmget(123,sizeof(int),IPC_CREAT|0666)) == -1)
+        perror("Shared memory flag couldn't be created");
+    flag = shmat(shmid1,NULL,0);
+    if(flag == (int*)-1){
+        perror("memory unavailable");
+        exit(2);
+    }    
+    flag[0] = 0;
+    
 
     //result variables
     //////////////////////////////////////////
@@ -172,10 +196,6 @@ int main(int argc,char** argv){
             //int results[n],count=0;
             int wpap;
             read(ctop_fd[i][0], &wpap, sizeof(int));
-            if(wpap==-1){
-                flag=-1;
-                exit(0);
-            }
             //13. After Controller captures a wpapx
             printf("Controller received a wpapx for row %d\n\n",i);
             wpapx[i]=wpap;   
@@ -192,9 +212,9 @@ int main(int argc,char** argv){
             for(int x = 0; x<n; x++){
                 if(validateX(values[x],a,b) == false){
                     perror("Value of X is out of bounds!!!\n");
-                    flag = -1;
-                    write(ctop_fd[i][1],&flag,sizeof(int));
-                    //printf("Value of flag in child updated to %d\n",flag);
+                    shmid1 = shmget(123,sizeof(int),IPC_CREAT|0666);
+                    flag = shmat(shmid1,NULL,0);
+                    flag[0] =-1;
                     exit(0);
                 }
             }
@@ -245,6 +265,10 @@ int main(int argc,char** argv){
             }
             exit(0);
         }
+    }
+    if(shmctl(shmid1,IPC_RMID,NULL) == -1){
+        perror("shmctl");
+        exit(-1);
     }
     for(int i =0; i<n;i++){
         printf("wpapx for %dth row: %d\n",i,wpapx[i]);
